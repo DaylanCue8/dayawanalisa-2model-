@@ -1,0 +1,37 @@
+name: dayaw
+description: "A new Flutter project."
+publish_to: 'none' # Remove if publishing
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  http: ^0.13.6
+  cupertino_icons: ^1.0.8
+  image_picker: ^1.2.1
+  http_parser: ^4.1.2
+  crop_your_image: ^1.0.6
+  image: ^4.0.17
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+# The section below is where the indentation matters most!
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/dayawlogo.png
+
+
+  fonts:
+    - family: BaybayinCustom
+      fonts:
+        - asset: assets/fonts/baybayin_custom.ttf  # ⚠️ your ttf filename

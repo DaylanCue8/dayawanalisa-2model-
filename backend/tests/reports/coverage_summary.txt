@@ -1,0 +1,18 @@
+Dayaw Translation System – Statement Coverage Summary
+=======================================================
+
+Module: backend/tagalog_to_baybayin.py
+
+Paths tested:
+  [x] Path 1 – Empty string guard clause
+  [x] Path 2 – Linguistic exception (mga)
+  [x] Path 3 – Rule A: Standalone vowel (a/e/i/o/u)
+  [x] Path 4 – Rule B: CV pair, inherent 'a'
+  [x] Path 4 – Rule B: CV pair, upper kudlit (e/i)
+  [x] Path 4 – Rule B: CV pair, lower kudlit (o/u)
+  [x] Path 5 – Rule C: Final consonant + virama
+  [x] Path 6 – Whitespace preservation
+
+Total test cases: 33
+Estimated statement coverage: >= 85%
+(Run: pytest --cov=backend --cov-report=term-missing for full report)

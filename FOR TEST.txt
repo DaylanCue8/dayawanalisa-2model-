@@ -1,0 +1,7 @@
+OBJECTIVE NUMBER 2
+
+A. To prove Rule-Based Consistency (Pass/Fail):
+pytest test_translator.py -v
+
+B. To measure Statement Coverage (The White Box Metric):
+pytest --cov=tagalog_to_baybayin test_translator.py    
