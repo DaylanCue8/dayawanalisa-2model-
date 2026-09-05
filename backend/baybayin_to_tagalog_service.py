@@ -74,6 +74,18 @@ def tighten_boxes(bin_img, boxes, pad=0):
     return tightened
 
 
+def resize_detected_glyph(crop_bin, target_size=56):
+    points = cv2.findNonZero(crop_bin)
+    if points is None:
+        return None
+    x, y, width, height = cv2.boundingRect(points)
+    tight_crop = crop_bin[y:y + height, x:x + width]
+    resized = cv2.resize(
+        tight_crop, (target_size, target_size), interpolation=cv2.INTER_CUBIC
+    )
+    return cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)[1]
+
+
 def group_boxes_into_words(boxes):
     if not boxes:
         return []
@@ -184,14 +196,16 @@ def classify_glyph(crop_bin, base_model, dia_model, base_classes, dia_classes,
         predicted_dia_name = _class_name(dia_classes, dia_prediction)
         position = 'Above' if centroids[dia_idx][1] < centroids[base_idx][1] else 'Below'
 
-        if float(dw) / float(dh) >= bar_aspect_threshold:
-            predicted_dia_name = 'Bar'
-        elif solidity < solidity_threshold:
+        aspect_ratio = float(dw) / float(dh)
+        is_thin_bar = aspect_ratio >= 1.8 and dh <= max(3, int(dw * 0.45))
+        if solidity < solidity_threshold:
             available_classes = [str(value).lower() for value in dia_classes]
             if 'x' in available_classes:
                 predicted_dia_name = 'X'
             elif 'cross' in available_classes:
                 predicted_dia_name = 'Cross'
+        elif is_thin_bar:
+            predicted_dia_name = 'Bar'
         else:
             predicted_dia_name = 'Dot'
 
@@ -240,7 +254,9 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
     for word_group in word_groups:
         word_parts = []
         for x0, y0, x1, y1 in word_group:
-            crop = binary[y0:y1, x0:x1]
+            crop = resize_detected_glyph(binary[y0:y1, x0:x1])
+            if crop is None:
+                continue
             base_name, dia_name, final_text, confidence = classify_glyph(
                 crop, base_model, dia_model, base_classes, dia_classes
             )
