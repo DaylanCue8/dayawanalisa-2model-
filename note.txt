@@ -1,0 +1,5 @@
+Organization: If you have 50 different API calls (Login, Logout, Get Profile, etc.), your main.dart won't become a 2,000-line mess. (api_service.dart)
+
+Maintenance: If your IP address changes, you only have to change it once in the baseUrl variable inside api_service.dart.
+
+Readability: Your UI code stays focused on how things look, while your service code stays focused on how things work.

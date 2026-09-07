@@ -1,0 +1,35 @@
+-- 1. Create the Database (Optional if you already have one)
+CREATE DATABASE IF NOT EXISTS dayaw;
+USE dayaw;
+
+-- 1. Table for tracking the overall translation attempt
+CREATE TABLE processing_sessions (
+    session_id INT AUTO_INCREMENT PRIMARY KEY,
+    status VARCHAR(50) DEFAULT 'Processing', -- Success, Low_Confidence, Failed
+    device_info VARCHAR(100) DEFAULT 'Mobile',
+    ip_address VARCHAR(45),
+    start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    end_time TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- 2. Table for granular character-by-character feedback
+CREATE TABLE detection_logs (
+    log_id INT AUTO_INCREMENT PRIMARY KEY,
+    session_id INT,
+    detected_char VARCHAR(10), -- e.g., 'NGA', 'LA', 'BA'
+    confidence_score FLOAT,    -- e.g., 85.5
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id) REFERENCES processing_sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE TABLE open_baybayin_archive (
+    archive_id INT AUTO_INCREMENT PRIMARY KEY,
+    log_id INT NOT NULL,               -- Links to the original detection (Traceability)
+    label_char VARCHAR(10),            -- The Romanized name (e.g., 'KA', 'BA', 'A')
+    script_type ENUM('Handwritten', 'Printed'), -- Useful for researchers
+    image_path VARCHAR(255),           -- URL/Path to the cropped image file in Cloud Storage
+    confidence_score FLOAT,            -- Must be 0.90 or higher
+    contributor_consent BOOLEAN DEFAULT 1, -- Verification that user clicked "Yes"
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (log_id) REFERENCES detection_logs(log_id) ON DELETE CASCADE
+);
