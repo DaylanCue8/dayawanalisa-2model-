@@ -7,7 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'tagalog_to_baybayin_local_translator.dart';
 
 class ApiService {
-  static const String _baseUrl = 'http://10.10.248.153:5000';
+  static const String _baseUrl = 'http://192.168.254.119:5000';
 
   final TagalogToBaybayinLocalTranslator _localTagalogTranslator = TagalogToBaybayinLocalTranslator();
 
@@ -17,6 +17,12 @@ class ApiService {
     String mode, {
     String? text,
     Uint8List? imageBytes,
+    // Which writing-instrument preset the backend should use for
+    // stroke-gap / diacritic thresholds ('marker' or 'pen'). Defaults
+    // to 'marker' so existing callers that don't pass this keep working
+    // unchanged. Only meaningful for image-based modes; ignored for
+    // 'Tagalog to Baybayin', which is handled locally anyway.
+    String inputType = 'marker',
   }) async {
     try {
       if (mode == 'Tagalog to Baybayin' && text != null) {
@@ -33,6 +39,7 @@ class ApiService {
       final request = http.MultipartRequest('POST', uri);
 
       request.fields['mode'] = mode;
+      request.fields['input_type'] = inputType;
 
       if (imageBytes != null || imageFile != null) {
         final bytes = imageBytes ?? await imageFile!.readAsBytes();

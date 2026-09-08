@@ -31,6 +31,13 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
   double _imageWidth = 0;
   double _imageHeight = 0;
 
+  // Which writing-instrument preset the backend should use for
+  // stroke-gap / diacritic thresholds. 'marker' covers both thick
+  // marker and pentel/felt-tip pens (they share the same tuned
+  // thresholds); 'pen' is for thin ballpoint/gel ink, which needs an
+  // adaptive, stroke-thickness-scaled gap threshold instead.
+  String _inputType = 'marker';
+
   /// Bakes the EXIF orientation into the actual pixel data (rotating/
   /// flipping as needed) and strips the orientation tag, producing a
   /// single normalized image. This MUST happen before the image is
@@ -62,6 +69,7 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
       null,
       'Baybayin to Tagalog',
       imageBytes: imageBytes,
+      inputType: _inputType,
     );
 
     if (!mounted) return;
@@ -271,6 +279,61 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     );
   }
 
+  /// Two-option segmented toggle for "Marker / Felt-tip" vs "Pen",
+  /// controlling which stroke-gap preset the backend uses. Placed above
+  /// the Gallery/Camera row so the user picks it before capturing.
+  Widget _buildInputTypeToggle() {
+    Widget buildOption(String value, String label, IconData icon) {
+      final bool selected = _inputType == value;
+      return Expanded(
+        child: GestureDetector(
+          onTap: () => setState(() => _inputType = value),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            decoration: BoxDecoration(
+              color: selected ? Colors.brown : Colors.brown.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 18, color: selected ? Colors.white : Colors.brown),
+                const SizedBox(height: 4),
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: selected ? Colors.white : Colors.brown,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F5F5),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            buildOption('marker', 'Marker / Felt-tip', Icons.brush),
+            const SizedBox(width: 4),
+            buildOption('pen', 'Pen', Icons.edit),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -286,7 +349,9 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
             child: _buildImageDisplay(),
           ),
         ),
-        const SizedBox(height: 30),
+        const SizedBox(height: 16),
+        _buildInputTypeToggle(),
+        const SizedBox(height: 16),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 30),
           child: Row(

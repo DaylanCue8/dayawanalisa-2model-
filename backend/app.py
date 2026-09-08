@@ -100,12 +100,23 @@ def update_session_status(session_id, status):
 # The Baybayin OCR pipeline has been moved to backend/baybayin_to_tagalog_service.py
 # to keep app.py focused on Flask routes and request handling.
 
+# Valid presets accepted from the client - anything else silently falls
+# back to 'marker' (the classify_glyph/preprocess_and_predict default),
+# so a malformed or missing value never crashes the request.
+VALID_INPUT_TYPES = {'marker', 'pentel_pen', 'pen'}
+
 # --- 5. API ROUTES ---
 
 @app.route('/api/translate', methods=['POST'])
 def translate():
     session_id = start_processing_session(request.remote_addr)
     mode = request.form.get('mode') if 'mode' in request.form else request.json.get('mode')
+
+    # Which writing-instrument preset to use for stroke-gap / diacritic
+    # thresholds. Sent by the Flutter app as a multipart form field
+    # ('marker' or 'pen'); defaults to 'marker' if missing or invalid.
+    raw_input_type = request.form.get('input_type') if 'input_type' in request.form else None
+    input_type = raw_input_type if raw_input_type in VALID_INPUT_TYPES else 'marker'
 
     try:
         if mode == 'Baybayin to Tagalog':
@@ -115,11 +126,23 @@ def translate():
             
             image_bytes = request.files['file'].read()
             text, conf, results, image_dims = preprocess_and_predict(
-                image_bytes, session_id, base_model, dia_model, base_classes, dia_classes
+                image_bytes, session_id, base_model, dia_model, base_classes, dia_classes,
+                input_type=input_type,
             )
-            
+
             log_detections(session_id, results)
-            status = "Success" if conf > 60 else "Low_Confidence"
+            # "Success" and "Low_Confidence" both mean "there's something
+            # to show the evaluation modal for." An empty results list -
+            # no characters segmented, or the image failed to decode - is
+            # a different situation entirely and needs its own status, so
+            # the frontend can show "no letters found" instead of popping
+            # the evaluation sheet with an empty detections list.
+            if not results:
+                status = "No_Characters"
+            elif conf > 60:
+                status = "Success"
+            else:
+                status = "Low_Confidence"
             update_session_status(session_id, status)
 
             return jsonify({
@@ -129,7 +152,8 @@ def translate():
                 "individual_detections": results,
                 "image_width": image_dims['width'],
                 "image_height": image_dims['height'],
-                "session_id": session_id
+                "session_id": session_id,
+                "input_type_used": input_type
             })
 
         elif mode == 'Tagalog to Baybayin':
