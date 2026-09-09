@@ -7,7 +7,8 @@ import re
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-from baybayin_to_tagalog_service import preprocess_and_predict
+from baybayin_marker_service import preprocess_and_predict as preprocess_and_predict_marker
+from baybayin_pen_service import preprocess_and_predict as preprocess_and_predict_pen
 from tagalog_to_baybayin import TagalogToBaybayin
 
 app = Flask(__name__)
@@ -95,15 +96,31 @@ def update_session_status(session_id, status):
             cursor.close()
             conn.close()
 
-# --- 4. IMAGE PROCESSING & AUTO-CROP ENGINE (MOVED TO baybayin_to_tagalog_service.py) ---
+# --- 4. IMAGE PROCESSING & AUTO-CROP ENGINE ---
 
-# The Baybayin OCR pipeline has been moved to backend/baybayin_to_tagalog_service.py
-# to keep app.py focused on Flask routes and request handling.
+# The Baybayin OCR pipeline lives in two fully independent modules:
+#   - baybayin_marker_service.py  (marker / pentel_pen)
+#   - baybayin_pen_service.py     (ballpoint / gel pen)
+# They share no code and no constants - each is self-contained with its
+# own tuned thresholds, so a change made to one while calibrating pen
+# cannot affect the other. app.py just picks which module's
+# preprocess_and_predict to call based on input_type.
 
-# Valid presets accepted from the client - anything else silently falls
-# back to 'marker' (the classify_glyph/preprocess_and_predict default),
-# so a malformed or missing value never crashes the request.
+# Valid presets accepted from the client. 'pentel_pen' is treated as an
+# alias for 'marker' (same confirmed-working thresholds); anything else
+# unrecognized falls back to 'marker' too, so a malformed or missing
+# value never crashes the request.
 VALID_INPUT_TYPES = {'marker', 'pentel_pen', 'pen'}
+
+
+def get_predict_function(input_type):
+    """Returns the correct module's preprocess_and_predict for the
+    given input_type. 'pen' -> pen module; everything else (marker,
+    pentel_pen, or an unrecognized value) -> marker module."""
+    if input_type == 'pen':
+        return preprocess_and_predict_pen
+    return preprocess_and_predict_marker
+
 
 # --- 5. API ROUTES ---
 
@@ -125,9 +142,10 @@ def translate():
                 return jsonify({"error": "No image uploaded"}), 400
             
             image_bytes = request.files['file'].read()
-            text, conf, results, image_dims = preprocess_and_predict(
+
+            predict_fn = get_predict_function(input_type)
+            text, conf, results, image_dims = predict_fn(
                 image_bytes, session_id, base_model, dia_model, base_classes, dia_classes,
-                input_type=input_type,
             )
 
             log_detections(session_id, results)

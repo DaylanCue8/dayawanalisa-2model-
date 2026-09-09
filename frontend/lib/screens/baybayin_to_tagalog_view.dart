@@ -6,6 +6,7 @@ import 'package:image/image.dart' as img;
 import '../services/api_service.dart';
 import '../widgets/image_cropper_widget.dart';
 import '../widgets/evaluation_modal.dart';
+import '../screens/camera_capture_screen.dart';
 
 /// Handles the "Baybayin to Tagalog" mode: capture/upload a photo, crop it,
 /// send it for translation, and show the result. Fully self-contained —
@@ -51,11 +52,18 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
   /// image while Flutter's Image.memory displays the raw, un-rotated
   /// bytes - causing exactly the kind of misaligned boxes you'd see
   /// with any camera photo carrying an EXIF orientation tag.
+  ///
+  /// Kept even for the custom camera screen: some devices still embed
+  /// EXIF orientation on captured JPEGs, so this stays as a safety net
+  /// regardless of capture source.
   Uint8List _normalizeOrientation(Uint8List bytes) {
     final decoded = img.decodeImage(bytes);
     if (decoded == null) return bytes;
     final oriented = img.bakeOrientation(decoded);
-    return Uint8List.fromList(img.encodeJpg(oriented, quality: 90));
+    // Quality bumped from 90 to 95 - this re-encode happens on every
+    // capture regardless of source, so keep it as close to lossless
+    // as practical for thin-stroke detail.
+    return Uint8List.fromList(img.encodeJpg(oriented, quality: 95));
   }
 
   Future<void> _processCroppedImage(Uint8List imageBytes) async {
@@ -102,16 +110,10 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
     });
   }
 
-  Future<void> _selectAndCropImage(ImageSource source) async {
-    final XFile? photo = await _picker.pickImage(
-      source: source,
-      imageQuality: 80,
-      maxWidth: 700,
-      maxHeight: 700,
-    );
-    if (photo == null) return;
-
-    final rawBytes = await photo.readAsBytes();
+  /// Shared pipeline for BOTH capture sources: normalize orientation,
+  /// let the user crop, then upload. Gallery and camera only differ in
+  /// how they obtain rawBytes before reaching this point.
+  Future<void> _handleRawImage(Uint8List rawBytes) async {
     if (!mounted) return;
 
     // Normalize orientation BEFORE cropping, so the crop UI itself
@@ -141,11 +143,30 @@ class _BaybayinToTagalogViewState extends State<BaybayinToTagalogView> {
   }
 
   Future<void> _uploadFromGallery() async {
-    await _selectAndCropImage(ImageSource.gallery);
+    final XFile? photo = await _picker.pickImage(
+      source: ImageSource.gallery,
+      // No imageQuality / maxWidth / maxHeight: those silently
+      // downscale and re-compress the file before it ever reaches the
+      // app, which is exactly what breaks thin strokes. Keep the
+      // gallery file at its native resolution and quality.
+    );
+    if (photo == null) return;
+
+    final rawBytes = await photo.readAsBytes();
+    await _handleRawImage(rawBytes);
   }
 
+  /// Now uses the custom CameraCaptureScreen (camera package) instead
+  /// of image_picker's OS camera, so we can force a high resolution
+  /// preset and lock focus/exposure before capture - neither of which
+  /// the OS camera app exposes to us.
   Future<void> _captureFromCamera() async {
-    await _selectAndCropImage(ImageSource.camera);
+    final Uint8List? captured = await Navigator.of(context).push<Uint8List>(
+      MaterialPageRoute(builder: (_) => const CameraCaptureScreen()),
+    );
+    if (captured == null) return;
+
+    await _handleRawImage(captured);
   }
 
   void _showEvaluation(Map<String, dynamic> data) {

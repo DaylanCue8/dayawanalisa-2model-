@@ -83,21 +83,12 @@ def tighten_boxes(bin_img, boxes, pad=0):
     return tightened
 
 
-def tight_crop_glyph(crop_bin):
-    """
-    Tightly crops to the glyph's ink bounding box but does NOT resize.
-    """
-    points = cv2.findNonZero(crop_bin)
-    if points is None:
-        return None
-    x, y, width, height = cv2.boundingRect(points)
-    return crop_bin[y:y + height, x:x + width]
-
-
 def tight_crop_glyph_with_offset(crop_bin):
     """
-    Same as tight_crop_glyph, but also returns the (x, y) offset of the
-    crop's top-left corner relative to crop_bin's own origin.
+    Tightly crops to the glyph's ink bounding box (no resize), and
+    returns the (x, y) offset of the crop's top-left corner relative to
+    crop_bin's own origin, so a caller can map back to absolute image
+    coordinates later.
     """
     points = cv2.findNonZero(crop_bin)
     if points is None:
@@ -106,11 +97,52 @@ def tight_crop_glyph_with_offset(crop_bin):
     return (x, y), crop_bin[y:y + height, x:x + width]
 
 
-GLYPH_REFINE_MERGE_KERNEL = (18, 18)
+def _estimate_stroke_thickness(binary_img):
+    """
+    Median-based (not 90th percentile) distance-transform thickness
+    estimate - more robust against self-intersecting loop crossings
+    that spike thickness locally.
+    """
+    dist = cv2.distanceTransform(binary_img, cv2.DIST_L2, 5)
+    nonzero_dists = dist[binary_img > 0]
+    if nonzero_dists.size == 0:
+        return 1.0
+    typical_half_width = float(np.percentile(nonzero_dists, 50))
+    return max(typical_half_width * 2.0, 1.0)
+
+
+# ---- GLYPH CLUSTERING: now scale-adaptive ----
+# Previously a fixed (18, 18) dilation kernel. That's a fixed PIXEL
+# size, but how many pixels a given real-world gap occupies depends
+# entirely on how close the camera was to the paper - the same letter
+# photographed close up can have 2-3x the pixel dimensions (and gaps)
+# of the same letter photographed from further away. A fixed kernel
+# tuned for one distance will under-merge at closer distances (this is
+# the "near = breaks into 2 boxes, far = stays as 1" symptom) and can
+# over-merge separate letters at closer distances.
+#
+# Scaling the kernel to the glyph's OWN measured stroke thickness makes
+# it distance-invariant: thicker apparent strokes (closer photo) get a
+# proportionally larger kernel; thinner apparent strokes (farther
+# photo) get a proportionally smaller one - the RATIO of gap-to-stroke
+# stays meaningful regardless of capture distance.
+GLYPH_CLUSTER_THICKNESS_MULTIPLIER = 4.5
+GLYPH_CLUSTER_MIN_KERNEL = 10
+GLYPH_CLUSTER_MAX_KERNEL = 45
 GLYPH_REFINE_MIN_AREA = 20
 
 
-def find_glyph_clusters(binary_img, kernel_size=GLYPH_REFINE_MERGE_KERNEL, min_area=GLYPH_REFINE_MIN_AREA):
+def estimate_glyph_cluster_kernel(crop_bin,
+                                   multiplier=GLYPH_CLUSTER_THICKNESS_MULTIPLIER,
+                                   min_kernel=GLYPH_CLUSTER_MIN_KERNEL,
+                                   max_kernel=GLYPH_CLUSTER_MAX_KERNEL):
+    thickness = _estimate_stroke_thickness(crop_bin)
+    size = int(round(thickness * multiplier))
+    size = max(min_kernel, min(size, max_kernel))
+    return (size, size)
+
+
+def find_glyph_clusters(binary_img, kernel_size, min_area=GLYPH_REFINE_MIN_AREA):
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, kernel_size)
     dilated = cv2.dilate(binary_img, kernel, iterations=1)
     contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -141,11 +173,17 @@ def tighten_to_ink(binary_img, box):
 
 
 def split_into_single_glyphs(crop_bin):
-    clusters = find_glyph_clusters(crop_bin)
+    """
+    kernel_size is now computed FROM crop_bin itself (its own stroke
+    thickness) rather than being a fixed constant - see
+    estimate_glyph_cluster_kernel.
+    """
+    kernel_size = estimate_glyph_cluster_kernel(crop_bin)
+    clusters = find_glyph_clusters(crop_bin, kernel_size=kernel_size)
     if len(clusters) <= 1:
         h, w = crop_bin.shape[:2]
-        return [((0, 0, w, h), crop_bin)]
-    return [tighten_to_ink(crop_bin, box) for box in clusters]
+        return [((0, 0, w, h), crop_bin)], kernel_size
+    return [tighten_to_ink(crop_bin, box) for box in clusters], kernel_size
 
 
 def crop_and_pad_to_square(img, pad_frac=0.15):
@@ -220,73 +258,25 @@ def _distance_transform_gap(labels, mask_label_ids, candidate_label_id):
     return float(dist[labels == candidate_label_id].min())
 
 
-def _estimate_stroke_thickness(binary_img):
-    """
-    Median-based (not 90th percentile) distance-transform thickness
-    estimate - more robust against self-intersecting loop crossings
-    that spike thickness locally. Used only by the PEN preset's
-    adaptive gap threshold below.
-    """
-    dist = cv2.distanceTransform(binary_img, cv2.DIST_L2, 5)
-    nonzero_dists = dist[binary_img > 0]
-    if nonzero_dists.size == 0:
-        return 1.0
-    typical_half_width = float(np.percentile(nonzero_dists, 50))
-    return max(typical_half_width * 2.0, 1.0)
+# ---- MARKER / PENTEL PEN: now ALSO adaptive, like PEN ----
+# Previously a fixed 1.9px threshold - same distance-dependence problem
+# as the clustering kernel above, just one level deeper (deciding base
+# vs diacritic WITHIN an already-isolated glyph, instead of deciding
+# glyph boundaries). Marker ink is thicker than pen ink, so it gets its
+# own multiplier/cap, but the underlying mechanism is identical.
+MARKER_GAP_THICKNESS_MULTIPLIER = 1.2
+MARKER_MAX_GAP_THRESHOLD_PIXELS = 5.0
 
-
-# ---- MARKER / PENTEL PEN: fixed gap threshold ----
-# Confirmed working as-is for thicker marker/felt-tip strokes. A break
-# in a single stroke caused by thresholding/anti-aliasing sits at a
-# near-constant tiny gap (~2px) independent of glyph size - a genuine
-# diacritic pen-lift measures several times that.
-MARKER_SAME_STROKE_GAP_THRESHOLD = 1.9
-
-# ---- PEN: adaptive gap threshold ----
-# Confirmed working for thin ballpoint/gel pen strokes, where a fixed
-# pixel threshold is too rigid. Scales with the glyph's OWN measured
-# stroke thickness instead.
 PEN_GAP_THICKNESS_MULTIPLIER = 1.5
 PEN_MAX_GAP_THRESHOLD_PIXELS = 6.0
 
 
-def separate_base_and_diacritic_fixed(labels, stats, num_labels,
-                                       gap_threshold=MARKER_SAME_STROKE_GAP_THRESHOLD):
-    """MARKER / PENTEL PEN preset: fixed pixel gap threshold."""
-    areas = [(i, stats[i, cv2.CC_STAT_AREA]) for i in range(1, num_labels)]
-    areas.sort(key=lambda t: t[1], reverse=True)
-
-    base_idx_list = [areas[0][0]]
-    remaining = [idx for idx, _ in areas[1:]]
-
-    keep_merging = True
-    while keep_merging and remaining:
-        keep_merging = False
-        still_remaining = []
-        for idx in remaining:
-            gap = _distance_transform_gap(labels, base_idx_list, idx)
-            if gap <= gap_threshold:
-                base_idx_list.append(idx)
-                keep_merging = True
-            else:
-                still_remaining.append(idx)
-        remaining = still_remaining
-
-    dia_idx = None
-    if remaining:
-        remaining_by_area = sorted(
-            remaining, key=lambda idx: stats[idx, cv2.CC_STAT_AREA], reverse=True
-        )
-        dia_idx = remaining_by_area[0]
-
-    return base_idx_list, dia_idx, gap_threshold
-
-
-def separate_base_and_diacritic_adaptive(labels, stats, num_labels, native_crop,
-                                          gap_thickness_multiplier=PEN_GAP_THICKNESS_MULTIPLIER,
-                                          max_gap_threshold_pixels=PEN_MAX_GAP_THRESHOLD_PIXELS):
-    """PEN preset: gap threshold scaled to the glyph's own stroke
-    thickness, capped so a self-intersection spike can't blow it out."""
+def separate_base_and_diacritic_adaptive(labels, stats, num_labels,
+                                          gap_thickness_multiplier,
+                                          max_gap_threshold_pixels):
+    """Gap threshold scaled to the glyph's own stroke thickness, capped
+    so a self-intersection spike can't blow it out. Shared by both the
+    marker and pen presets now - only the multiplier/cap differ."""
     areas = [(i, stats[i, cv2.CC_STAT_AREA]) for i in range(1, num_labels)]
     areas.sort(key=lambda t: t[1], reverse=True)
 
@@ -322,33 +312,25 @@ def separate_base_and_diacritic_adaptive(labels, stats, num_labels, native_crop,
 
 INPUT_TYPE_PRESETS = {
     'marker': {
-        'separation_mode': 'fixed',
-        'gap_threshold': MARKER_SAME_STROKE_GAP_THRESHOLD,
+        'gap_thickness_multiplier': MARKER_GAP_THICKNESS_MULTIPLIER,
+        'max_gap_threshold_pixels': MARKER_MAX_GAP_THRESHOLD_PIXELS,
         'min_pixels_for_shape_analysis': 16,
-        'bar_rotated_aspect_threshold': 2.2,
         'solidity_threshold': 0.80,
     },
     'pentel_pen': {
-        'separation_mode': 'fixed',
-        'gap_threshold': MARKER_SAME_STROKE_GAP_THRESHOLD,
+        'gap_thickness_multiplier': MARKER_GAP_THICKNESS_MULTIPLIER,
+        'max_gap_threshold_pixels': MARKER_MAX_GAP_THRESHOLD_PIXELS,
         'min_pixels_for_shape_analysis': 16,
-        'bar_rotated_aspect_threshold': 2.2,
         'solidity_threshold': 0.80,
     },
     'pen': {
-        'separation_mode': 'adaptive',
         'gap_thickness_multiplier': PEN_GAP_THICKNESS_MULTIPLIER,
         'max_gap_threshold_pixels': PEN_MAX_GAP_THRESHOLD_PIXELS,
         'min_pixels_for_shape_analysis': 16,
-        'bar_rotated_aspect_threshold': 2.2,
         'solidity_threshold': 0.80,
     },
 }
 DEFAULT_INPUT_TYPE = 'marker'
-
-
-BAR_ROTATED_ASPECT_THRESHOLD = 2.2
-MIN_PIXELS_FOR_SHAPE_ANALYSIS = 16
 
 
 def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes,
@@ -358,17 +340,20 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
     native_crop: tight-cropped binary glyph at ITS ORIGINAL resolution
     (NOT yet resized to 56x56).
 
-    input_type: 'marker', 'pentel_pen', or 'pen' - selects which
-    separate_base_and_diacritic implementation and threshold set to use,
-    per INPUT_TYPE_PRESETS. Each preset reflects a version that has been
-    tested and confirmed working for that specific ink type - marker and
-    pentel_pen currently share settings (a fixed gap threshold);
-    ballpoint/gel pen needs the adaptive, stroke-thickness-scaled gap
-    threshold instead.
+    input_type: 'marker', 'pentel_pen', or 'pen' - selects the
+    multiplier/cap used by the shared adaptive gap-threshold logic.
+    All three now scale with the glyph's own measured stroke thickness
+    rather than using a fixed pixel count, so results stay consistent
+    whether the photo was taken close up or from further away.
+
+    Diacritics are Dot and Cross/X only. A dot above the base
+    represents E/I and a dot below represents O/U - Baybayin doesn't
+    distinguish these pairs by shape, so both readings are reported
+    together (e.g. "ba" + dot above -> "be/bi"). Cross/X cancels the
+    vowel entirely, leaving the bare consonant.
     """
     preset = INPUT_TYPE_PRESETS.get(input_type, INPUT_TYPE_PRESETS[DEFAULT_INPUT_TYPE])
     min_pixels_for_shape_analysis = preset['min_pixels_for_shape_analysis']
-    bar_rotated_aspect_threshold = preset['bar_rotated_aspect_threshold']
     solidity_threshold = preset['solidity_threshold']
 
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(native_crop)
@@ -394,18 +379,12 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
     whole_prediction, whole_confidence = _predict_with_confidence(base_model, hog_whole)
     whole_base_name = _class_name(base_classes, whole_prediction)
 
-    # ---- SEPARATION: dispatch to the preset's chosen implementation ----
-    if preset['separation_mode'] == 'adaptive':
-        base_idx_list, dia_idx, gap_threshold_used = separate_base_and_diacritic_adaptive(
-            labels, stats, num_labels, native_crop,
-            gap_thickness_multiplier=preset['gap_thickness_multiplier'],
-            max_gap_threshold_pixels=preset['max_gap_threshold_pixels'],
-        )
-    else:
-        base_idx_list, dia_idx, gap_threshold_used = separate_base_and_diacritic_fixed(
-            labels, stats, num_labels,
-            gap_threshold=preset['gap_threshold'],
-        )
+    # ---- SEPARATION: shared adaptive logic, preset supplies constants ----
+    base_idx_list, dia_idx, gap_threshold_used = separate_base_and_diacritic_adaptive(
+        labels, stats, num_labels,
+        gap_thickness_multiplier=preset['gap_thickness_multiplier'],
+        max_gap_threshold_pixels=preset['max_gap_threshold_pixels'],
+    )
 
     if dia_idx is None:
         predicted_base_name = whole_base_name
@@ -466,22 +445,10 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
         base_centroid_y = by + (bh / 2.0)
         position = 'Above' if centroids[dia_idx][1] < base_centroid_y else 'Below'
 
-        dia_points = cv2.findNonZero(dia_crop)
-        if dia_points is not None:
-            (_, _), (rect_w, rect_h), _ = cv2.minAreaRect(dia_points)
-            long_side = max(rect_w, rect_h)
-            short_side = max(min(rect_w, rect_h), 1e-6)
-            rotated_aspect_ratio = long_side / short_side
-        else:
-            rotated_aspect_ratio = float(dw) / float(dh)
-
-        is_thin_bar = rotated_aspect_ratio >= bar_rotated_aspect_threshold
         is_too_small_for_shape_analysis = (dw * dh) < min_pixels_for_shape_analysis
 
         if is_too_small_for_shape_analysis:
             predicted_dia_name = 'Dot'
-        elif is_thin_bar:
-            predicted_dia_name = 'Bar'
         elif solidity < solidity_threshold:
             available_classes = [str(value).lower() for value in dia_classes]
             if 'x' in available_classes:
@@ -491,13 +458,6 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
         else:
             predicted_dia_name = 'Dot'
 
-        # ---- SPLIT-VS-WHOLE CORRECTION ----
-        # Vowels ALWAYS get corrected if whole-crop is at least as
-        # confident, since a real diacritic can never legitimately
-        # attach to A/EI/OU. Non-vowels only get corrected when the
-        # split-off piece was ALSO too small to trust geometrically -
-        # catches stray stroke fragments (tails/serifs) without
-        # overriding genuinely visible diacritics on consonants.
         force_for_vowel = whole_base_name in ('A', 'EI', 'OU') and whole_confidence >= base_confidence
         prefer_for_fragment = whole_confidence >= base_confidence and is_too_small_for_shape_analysis
 
@@ -517,8 +477,7 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
 
         if debug:
             print(f"  [debug] input_type={input_type}, dw={dw}, dh={dh}, area={dw * dh}, "
-                  f"rotated_aspect_ratio={rotated_aspect_ratio:.2f} "
-                  f"(threshold={bar_rotated_aspect_threshold}), solidity={solidity:.2f}, "
+                  f"solidity={solidity:.2f} (threshold={solidity_threshold}), "
                   f"too_small={is_too_small_for_shape_analysis}, "
                   f"gap_threshold_used={gap_threshold_used:.2f}, "
                   f"split_svm_pred='{svm_raw_dia_prediction}', "
@@ -531,14 +490,10 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
         base_root = predicted_base_name[:-1]
         if 'cross' in dia_clean or 'x' in dia_clean:
             final_output_text = base_root
-        elif position == 'Above' and 'bar' in dia_clean:
-            final_output_text = base_root + 'e'
         elif position == 'Above' and 'dot' in dia_clean:
-            final_output_text = base_root + 'i'
+            final_output_text = base_root + 'e/i'
         elif position == 'Below' and 'dot' in dia_clean:
-            final_output_text = base_root + 'o'
-        elif position == 'Below' and 'bar' in dia_clean:
-            final_output_text = base_root + 'u'
+            final_output_text = base_root + 'o/u'
 
     confidence = base_confidence
     if predicted_dia_name != 'None':
@@ -547,7 +502,7 @@ def classify_glyph(native_crop, base_model, dia_model, base_classes, dia_classes
 
 
 def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_classes, dia_classes,
-                           input_type=DEFAULT_INPUT_TYPE):
+                           input_type=DEFAULT_INPUT_TYPE, debug=False):
     if base_model is None or dia_model is None:
         raise ValueError('Baybayin base and diacritic models not loaded')
 
@@ -585,12 +540,15 @@ def preprocess_and_predict(image_bytes, session_id, base_model, dia_model, base_
             tight_abs_x = x0 + crop_offset[0]
             tight_abs_y = y0 + crop_offset[1]
 
-            single_glyph_crops = split_into_single_glyphs(crop)
+            single_glyph_crops, kernel_used = split_into_single_glyphs(crop)
+            if debug:
+                print(f"  [debug] glyph cluster kernel used: {kernel_used} "
+                      f"-> {len(single_glyph_crops)} piece(s)")
 
             for local_box, glyph_crop in single_glyph_crops:
                 base_name, dia_name, final_text, confidence = classify_glyph(
                     glyph_crop, base_model, dia_model, base_classes, dia_classes,
-                    input_type=input_type,
+                    input_type=input_type, debug=debug,
                 )
                 if base_name == 'Unknown':
                     continue

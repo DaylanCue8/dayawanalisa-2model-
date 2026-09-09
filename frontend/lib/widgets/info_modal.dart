@@ -37,7 +37,7 @@ class InfoModal extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             const Text(
-              "Dayaw is a research project from Leyte Normal University (LNU) dedicated to preserving the ancient Filipino script through AI-assisted recognition.",
+              "Dayaw is a Capstone project from Leyte Normal University (LNU) dedicated to preserving the ancient Filipino script through recognition.",
               style: TextStyle(fontSize: 15, color: Colors.black87),
             ),
 

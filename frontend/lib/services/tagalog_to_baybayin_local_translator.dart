@@ -1,10 +1,13 @@
 class TagalogToBaybayinLocalTranslator {
   final Map<String, String> baseMap = {
     'a': 'ᜀ',
+    // Baybayin has only 3 independent vowel letters: A, I/E, and U/O.
+    // 'e' and 'i' share the same letter; 'o' and 'u' share the same
+    // letter. There is no separate glyph for a bare 'i' or 'u'.
     'e': 'ᜁ',
-    'i': '\u1717',
+    'i': 'ᜁ',
     'o': 'ᜂ',
-    'u': '\u1718',
+    'u': 'ᜂ',
     'ba': 'ᜊ',
     'ka': 'ᜃ',
     'da': 'ᜇ',
@@ -22,9 +25,13 @@ class TagalogToBaybayinLocalTranslator {
     'ya': 'ᜌ',
   };
 
-  final String kudlitE = '\u1715';
+  // Unicode Baybayin only defines two vowel-sign kudlits: VOWEL SIGN I
+  // (U+1712, used for both I and E readings) and VOWEL SIGN U (U+1713,
+  // used for both U and O readings). There is no distinct E or U sign,
+  // so kudlitE/kudlitU reuse the same marks as kudlitI/kudlitO.
   final String kudlitI = '\u1712';
-  final String kudlitU = '\u1716';
+  final String kudlitE = '\u1712';
+  final String kudlitU = '\u1713';
   final String kudlitO = '\u1713';
   final String virama = '\u1714';
   final String danda = '᜵';
@@ -45,23 +52,28 @@ class TagalogToBaybayinLocalTranslator {
 
     var workingText = originalText.replaceAll('ng', 'NG');
 
-    if (workingText == 'mga') {
-      return {'translated_text': 'ᜋᜄ', 'confidence': 100.0};
-    }
-
+    // 'mga' is pronounced "ma-nga" (ma + nga), NOT "ma-ga". Handled as
+    // its own token, with a word boundary, so it works anywhere in the
+    // text - not just when it's the entire input.
     final pattern = RegExp(
-      r'(NG[aeiou]|(?:[bkdrghlmnpstwry])?[aeiou])|(NG|[bkdrghlmnpstwry])|([aeiou])|(\s+)|(\.|\,)',
+      r'(\bmga\b)|(NG[aeiou]|(?:[bkdrghlmnpstwry])?[aeiou])|(NG|[bkdrghlmnpstwry])|([aeiou])|(\s+)|(\.|\,)',
     );
 
     final buffer = StringBuffer();
     final matches = pattern.allMatches(workingText);
 
     for (final match in matches) {
-      final cv = match.group(1);
-      final c = match.group(2);
-      final v = match.group(3);
-      final space = match.group(4);
-      final punct = match.group(5);
+      final mgaWord = match.group(1);
+      final cv = match.group(2);
+      final c = match.group(3);
+      final v = match.group(4);
+      final space = match.group(5);
+      final punct = match.group(6);
+
+      if (mgaWord != null) {
+        buffer.write('${baseMap['ma']}${baseMap['nga']}');
+        continue;
+      }
 
       if (space != null) {
         buffer.write(space);
